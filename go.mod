@@ -1,4 +1,4 @@
-module protoc-gen-gosrcinfo
+module github.com/avtion/protoc-gen-gosrcinfo
 
 go 1.18
 
