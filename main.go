@@ -4,8 +4,6 @@
 package main
 
 import (
-	"bytes"
-	"compress/gzip"
 	"fmt"
 	"path"
 	"strings"
@@ -77,43 +75,36 @@ func generateSourceInfo(fd *desc.FileDescriptor, names *plugins.GoNames, resp *p
 	if err != nil {
 		return fmt.Errorf("failed to serialize source code info: %w", err)
 	}
-	// Source code info has lots of repeated sequences of bytes in the 'path' field
-	// of locations, and the comments tend to be text that is reasonably well
-	// compressed. So we can make binaries a little smaller by gzipping first.
-	var encodedBuf bytes.Buffer
-	zipWriter := gzip.NewWriter(&encodedBuf)
-	if _, err := zipWriter.Write(siBytes); err != nil {
-		return fmt.Errorf("failed to compress source code info: %w", err)
-	}
-	if err := zipWriter.Close(); err != nil {
-		return fmt.Errorf("failed to compress source code info: %w", err)
-	}
 
+	descpbPkg := f.RegisterImport("google.golang.org/protobuf/types/descriptorpb", "descriptorpb")
 	srcInfoPkg := f.RegisterImport("github.com/jhump/protoreflect/desc/sourceinfo", "sourceinfo")
+	protoPkg := f.RegisterImport("google.golang.org/protobuf/proto", "proto")
 
-	var srcInfoVarBlock gopoet.CodeBlock
-	srcInfoVarBlock.Println("srcInfo := []byte{")
-	encodedBytes := encodedBuf.Bytes()
-	for len(encodedBytes) > 0 {
+	varName := "srcInfo_" + clean(fd.GetName())
+	var initBlock gopoet.CodeBlock
+	initBlock.Println("[]byte{")
+	for len(siBytes) > 0 {
 		var chunk []byte
-		if len(encodedBytes) < 16 {
-			chunk = encodedBytes
-			encodedBytes = nil
+		if len(siBytes) < 16 {
+			chunk = siBytes
+			siBytes = nil
 		} else {
-			chunk = encodedBytes[:16]
-			encodedBytes = encodedBytes[16:]
+			chunk = siBytes[:16]
+			siBytes = siBytes[16:]
 		}
 		for _, b := range chunk {
-			srcInfoVarBlock.Printf(" 0x%02x,", b)
+			initBlock.Printf(" 0x%02x,", b)
 		}
-		srcInfoVarBlock.Println("")
+		initBlock.Println("")
 	}
-	srcInfoVarBlock.Println("}")
+	initBlock.Println("}")
+	f.AddVar(gopoet.NewVar(varName).SetInitializer(&initBlock))
 	f.AddElement(gopoet.NewFunc("init").
-		AddCode(&srcInfoVarBlock).
-		Printlnf("if err := %sRegisterEncodedSourceInfo(%q, srcInfo); err != nil {", srcInfoPkg, fd.GetName()).
+		Printlnf("var si %sSourceCodeInfo", descpbPkg).
+		Printlnf("if err := %sUnmarshal(%s, &si); err != nil {", protoPkg, varName).
 		Println("    panic(err)").
-		Println("}"))
+		Println("}").
+		Printlnf("%sRegisterSourceInfo(%q, &si)", srcInfoPkg, fd.GetName()))
 
 	out := resp.OutputFile(filename)
 	return gopoet.WriteGoFile(out, f)
